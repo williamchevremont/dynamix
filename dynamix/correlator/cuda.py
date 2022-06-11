@@ -105,20 +105,59 @@ class CublasMatMulCorrelator(MatMulCorrelator):
                     vari[pos] = ( matrix[pos] - avgs[x] )*( matrix[pos] - avgs[x] )/(1.*(N-x)*(N-x));
                 }
             }
-            
+                
+            // Compute the average, taking care of non-finite values in ttcf (happen if too low counts, some are nan)
+            __global__ void avg_stde_from_ttcf(float* ttcf, float* avg, float* stde, int N) {
+                int x = blockDim.x * blockIdx.x + threadIdx.x;
+                if(x >= N) return;
+                
+                int n = N-x;
+                float acc = 0.;
+        
+                for(int y=0;y<N;y++) {
+                    int p = y*N+x;
+                    float v = ttcf[p];
+                    if(isfinite(v) && v != 0.) {
+                        acc += v;
+                    }
+                }
+                    
+                float avg_ = acc/(1.*n);
+                acc=0;
+                
+                for(int y=0;y<N;y++) {
+                    int p = y*N+x;
+                    float v = ttcf[p];
+                    if(isfinite(v) && v != 0.) {
+                        acc += (v - avg_)*(v - avg_);
+                    }
+                }
+                
+                avg[x] = avg_;
+                stde[x] = acc/(1.*n*n);
+            }
             """
         )
         
         self.extract_diags_kernel = mod.get_function("extract_upper_diags")
         self.trigl_avg_elms = mod.get_function("trigl_avg_elms")
         self.trigl_vari_elms = mod.get_function("trigl_vari_elms")
+        self.avg_stde_from_ttcf = mod.get_function("avg_stde_from_ttcf")
         
-        self._blocks = (32, 32, 1)
-        self._grid = (
-            updiv(self.nframes, self._blocks[0]),
-            updiv(self.nframes, self._blocks[1]),
+        self._blocks2d = (32, 32, 1)
+        self._grid2d = (
+            updiv(self.nframes, self._blocks2d[0]),
+            updiv(self.nframes, self._blocks2d[1]),
             1
         )
+        
+        self._blocks1d = (32*32, 1, 1)
+        self._grid1d = (
+            updiv(self.nframes, self._blocks1d[0]),
+            1,
+            1
+        )
+        
         self.d_ttcf = garray.zeros((self.nframes, self.nframes), dtype=np.float32)
         self.d_average = garray.zeros(self.nframes, dtype=np.float32)
         self.d_variance = garray.zeros_like(self.d_average)
@@ -138,15 +177,28 @@ class CublasMatMulCorrelator(MatMulCorrelator):
         tmp1 /= npix
         
         # Get TTCF in (lag, age)
-        self.extract_diags_kernel(tmp1,self.d_ttcf,np.int32(self.nframes),grid=self._grid, block=self._blocks)
+        self.extract_diags_kernel(tmp1,
+                                  self.d_ttcf,
+                                  np.int32(self.nframes),
+                                  grid=self._grid2d,
+                                  block=self._blocks2d)
         
-        # Average
-        self.trigl_avg_elms(self.d_ttcf,tmp1,np.int32(self.nframes),grid=self._grid, block=self._blocks)
-        skmisc.sum(tmp1, axis=0, out=self.d_average)
+#         Compute average and standard error from ttcf
+        self.avg_stde_from_ttcf(self.d_ttcf,
+                                self.d_average,
+                                self.d_variance,
+                                np.int32(self.nframes),
+                                grid=self._grid1d,
+                                block=self._blocks1d)
         
-        # Variance
-        self.trigl_vari_elms(self.d_ttcf, tmp1, self.d_average, np.int32(self.nframes), grid=self._grid, block=self._blocks)
-        skmisc.sum(tmp1, axis=0, out=self.d_variance)
+        
+#        # Average
+#        self.trigl_avg_elms(self.d_ttcf,tmp1,np.int32(self.nframes),grid=self._grid2d, block=self._blocks2d)
+#        skmisc.sum(tmp1, axis=0, out=self.d_average)
+#        
+#        # Variance
+#        self.trigl_vari_elms(self.d_ttcf, tmp1, self.d_average, np.int32(self.nframes), grid=self._grid2d, block=self._blocks2d)
+#        skmisc.sum(tmp1, axis=0, out=self.d_variance)
 
         ttcf = self.d_ttcf.get()
         ttcf[ttcf == 0] = None
