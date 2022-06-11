@@ -126,6 +126,7 @@ class CublasMatMulCorrelator(MatMulCorrelator):
     def _correlate_matmul_cublas(self, frames_flat, mask):
         arr = np.ascontiguousarray(frames_flat[:, mask], dtype=np.float32)
         npix = arr.shape[1]
+        
         # Pre-allocating memory for all bins might save a bit of time,
         # but would take more memory
         d_arr = garray.to_gpu(arr)

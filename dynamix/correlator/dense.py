@@ -52,8 +52,7 @@ def py_dense_correlator(xpcs_data, mask, calc_std=False, ttcf_par=0):
     denom = np.dot(meanmatr.T, meanmatr)
 
     res = np.zeros(ltimes-1)  # was ones()
-    if calc_std:
-        dev = np.zeros_like(res)
+    dev = np.zeros_like(res)
 
     for i in range(1,ltimes):  # was ltimes-1, so res[-1] was always 1 !
         dia_n = np.diag(num, k=i) 
